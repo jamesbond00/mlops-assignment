@@ -58,7 +58,69 @@ def matches(gold_rows: list[tuple] | None, pred_rows: list[tuple] | None) -> boo
 
 def eval_one(question: dict, agent_url: str) -> dict:
     """Score one question. Return a dict capturing per-iteration correctness."""
-    raise NotImplementedError("Phase 5")
+    db_id = question["db_id"]
+    gold_ok, gold_rows, gold_error = run_sql(db_id, question["gold_sql"])
+
+    started = time.monotonic()
+    agent_error: str | None = None
+    agent_response: dict = {}
+    try:
+        response = httpx.post(
+            agent_url,
+            json={
+                "question": question["question"],
+                "db": db_id,
+                "tags": {
+                    "phase": "5",
+                    "run": "eval_baseline",
+                    "db": db_id,
+                },
+            },
+            timeout=180.0,
+        )
+        response.raise_for_status()
+        agent_response = response.json()
+    except Exception as e:  # noqa: BLE001
+        agent_error = f"{type(e).__name__}: {e}"
+
+    latency = time.monotonic() - started
+    history = agent_response.get("history", []) if agent_response else []
+    sql_attempts = [
+        h.get("sql", "")
+        for h in history
+        if h.get("node") in {"generate_sql", "revise"} and h.get("sql")
+    ]
+    if not sql_attempts and agent_response.get("sql"):
+        sql_attempts = [agent_response["sql"]]
+
+    iteration_results = []
+    for idx, sql in enumerate(sql_attempts, 1):
+        pred_ok, pred_rows, pred_error = run_sql(db_id, sql)
+        correct = gold_ok and pred_ok and matches(gold_rows, pred_rows)
+        iteration_results.append({
+            "iteration": idx,
+            "sql": sql,
+            "execution_ok": pred_ok,
+            "execution_error": pred_error,
+            "correct": correct,
+        })
+
+    final_correct = iteration_results[-1]["correct"] if iteration_results else False
+    return {
+        "question": question["question"],
+        "db_id": db_id,
+        "gold_sql": question["gold_sql"],
+        "gold_execution_ok": gold_ok,
+        "gold_execution_error": gold_error,
+        "agent_ok": agent_response.get("ok", False) if agent_response else False,
+        "agent_error": agent_error or agent_response.get("error"),
+        "final_sql": agent_response.get("sql", "") if agent_response else "",
+        "final_correct": final_correct,
+        "iterations": agent_response.get("iterations", len(iteration_results)) if agent_response else 0,
+        "latency_seconds": latency,
+        "iteration_results": iteration_results,
+        "history": history,
+    }
 
 
 def summarize(results: list[dict]) -> dict:
@@ -70,7 +132,47 @@ def summarize(results: list[dict]) -> dict:
     The agent stopped emitting; whatever it had at termination is what
     would have been served had we polled at iteration k.
     """
-    raise NotImplementedError("Phase 5")
+    total = len(results)
+    if total == 0:
+        return {
+            "total": 0,
+            "correct": 0,
+            "accuracy": 0.0,
+            "per_iteration": {},
+            "avg_iterations": 0.0,
+            "avg_latency_seconds": 0.0,
+            "agent_errors": 0,
+        }
+
+    max_iter = max((len(r.get("iteration_results", [])) for r in results), default=0)
+    per_iteration: dict[str, dict] = {}
+    for iteration in range(1, max_iter + 1):
+        correct = 0
+        attempted = 0
+        for result in results:
+            iter_results = result.get("iteration_results", [])
+            if not iter_results:
+                continue
+            attempted += 1
+            carried = iter_results[min(iteration, len(iter_results)) - 1]
+            correct += int(bool(carried.get("correct")))
+        per_iteration[str(iteration)] = {
+            "correct": correct,
+            "attempted": attempted,
+            "accuracy": correct / total,
+        }
+
+    final_correct = sum(int(bool(r.get("final_correct"))) for r in results)
+    return {
+        "total": total,
+        "correct": final_correct,
+        "accuracy": final_correct / total,
+        "per_iteration": per_iteration,
+        "avg_iterations": sum(float(r.get("iterations", 0)) for r in results) / total,
+        "avg_latency_seconds": sum(float(r.get("latency_seconds", 0.0)) for r in results) / total,
+        "agent_errors": sum(1 for r in results if r.get("agent_error")),
+        "gold_execution_errors": sum(1 for r in results if not r.get("gold_execution_ok")),
+    }
 
 
 # ---------- Main (provided) --------------------------------------------
