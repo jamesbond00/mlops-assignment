@@ -31,7 +31,7 @@ from agent.schema import render_schema
 
 # Total generate + revise calls before the loop is forced to stop.
 # 3-5 is a reasonable range; tune it as part of Phase 3.
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 2
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
@@ -55,13 +55,14 @@ class AgentState:
     history: list[dict[str, Any]] = field(default_factory=list)
 
 
-def llm() -> ChatOpenAI:
+def llm(max_tokens: int = 256) -> ChatOpenAI:
     """Chat client pointed at VLLM_BASE_URL (your local vLLM by default)."""
     return ChatOpenAI(
         model=VLLM_MODEL,
         base_url=VLLM_BASE_URL,
         api_key=LLM_API_KEY,
         temperature=0.0,
+        max_tokens=max_tokens,
     )
 
 
@@ -108,7 +109,7 @@ def generate_sql_node(state: AgentState) -> dict:
     This node is wired and ready; fill in GENERATE_SQL_SYSTEM / GENERATE_SQL_USER
     in prompts.py to make it produce real queries.
     """
-    response = llm().invoke([
+    response = llm(max_tokens=192).invoke([
         ("system", prompts.GENERATE_SQL_SYSTEM),
         ("user", prompts.GENERATE_SQL_USER.format(
             schema=state.schema,
@@ -146,7 +147,7 @@ def verify_node(state: AgentState) -> dict:
         if state.execution is not None
         else "ERROR: SQL was not executed."
     )
-    response = llm().invoke([
+    response = llm(max_tokens=80).invoke([
         ("system", prompts.VERIFY_SYSTEM),
         ("user", prompts.VERIFY_USER.format(
             schema=state.schema,
@@ -193,7 +194,7 @@ def revise_node(state: AgentState) -> dict:
         if state.execution is not None
         else "ERROR: SQL was not executed."
     )
-    response = llm().invoke([
+    response = llm(max_tokens=192).invoke([
         ("system", prompts.REVISE_SYSTEM),
         ("user", prompts.REVISE_USER.format(
             schema=state.schema,
