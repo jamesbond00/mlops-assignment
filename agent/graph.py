@@ -40,6 +40,15 @@ VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507")
 LLM_API_KEY = os.environ.get("OPENAI_API_KEY", "not-needed")
 
 
+def verify_enabled() -> bool:
+    """Whether to run the verifier LLM call.
+
+    Phase 6 uses this as a throughput experiment: disabling verification keeps
+    generate -> execute but removes the second sequential LLM call.
+    """
+    return os.environ.get("AGENT_VERIFY", "true").lower() not in {"0", "false", "no", "off"}
+
+
 @dataclass
 class AgentState:
     """State threaded through the graph. Extend with fields you need."""
@@ -142,6 +151,17 @@ def verify_node(state: AgentState) -> dict:
     What counts as "not plausible" is yours to define - see the Phase 3 targets
     in the README.
     """
+    if not verify_enabled():
+        return {
+            "verify_ok": True,
+            "verify_issue": "verification disabled by AGENT_VERIFY=false",
+            "history": state.history + [{
+                "node": "verify",
+                "ok": True,
+                "issue": "skipped: AGENT_VERIFY=false",
+            }],
+        }
+
     execution_text = (
         state.execution.render()
         if state.execution is not None
